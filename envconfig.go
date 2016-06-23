@@ -32,12 +32,22 @@ type Decoder interface {
 	Decode(value string) error
 }
 
+type Locator interface {
+	Locate(key string, def string) string
+}
+
 func (e *ParseError) Error() string {
 	return fmt.Sprintf("envconfig.Process: assigning %[1]s to %[2]s: converting '%[3]s' to type %[4]s", e.KeyName, e.FieldName, e.Value, e.TypeName)
 }
 
 // Process populates the specified struct based on environment variables
 func Process(prefix string, spec interface{}) error {
+	return ProcessWithLocator(prefix, spec, nil)
+}
+
+// ProcessWithLocator populates the specified struct based on environment variables
+// and an optional Locator interface implmentor
+func ProcessWithLocator(prefix string, spec interface{}, locator Locator) error {
 	s := reflect.ValueOf(spec)
 
 	if s.Kind() != reflect.Ptr {
@@ -56,10 +66,11 @@ func Process(prefix string, spec interface{}) error {
 
 		if typeOfSpec.Field(i).Anonymous && f.Kind() == reflect.Struct {
 			embeddedPtr := f.Addr().Interface()
-			if err := Process(prefix, embeddedPtr); err != nil {
+			if err := ProcessWithLocator(prefix, embeddedPtr, locator); err != nil {
 				return err
 			}
 			f.Set(reflect.ValueOf(embeddedPtr).Elem())
+			continue
 		}
 
 		alt := typeOfSpec.Field(i).Tag.Get("envconfig")
@@ -67,6 +78,7 @@ func Process(prefix string, spec interface{}) error {
 		if alt != "" {
 			fieldName = alt
 		}
+
 		key := strings.ToUpper(fmt.Sprintf("%s_%s", prefix, fieldName))
 		// `os.Getenv` cannot differentiate between an explicitly set empty value
 		// and an unset value. `os.LookupEnv` is preferred to `syscall.Getenv`,
@@ -78,13 +90,21 @@ func Process(prefix string, spec interface{}) error {
 		}
 
 		def := typeOfSpec.Field(i).Tag.Get("default")
-		if def != "" && !ok {
-			value = def
+		if !ok {
+			loc := typeOfSpec.Field(i).Tag.Get("locate")
+			if locator != nil && loc != "" {
+				value = locator.Locate(loc, def)
+				if value != "" {
+					ok = true
+				}
+			} else if def != "" {
+				value = def
+			}
 		}
 
 		req := typeOfSpec.Field(i).Tag.Get("required")
 		if !ok && def == "" {
-			if req == "true" {
+			if req == "true" && isUnset(f) {
 				return fmt.Errorf("required key %s missing value", key)
 			}
 			continue
@@ -179,6 +199,41 @@ func processField(value string, field reflect.Value) error {
 	return nil
 }
 
+// Checks the underlying value of the field to allow the required tag
+// to be applied to fields staticly set in struct construction
+func isUnset(field reflect.Value) bool {
+	typ := field.Type()
+
+	if typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+		if field.IsNil() {
+			return true
+		}
+	}
+
+	switch typ.Kind() {
+	case reflect.String:
+		if field.String() == "" {
+			return true
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if field.Int() == 0 {
+			return true
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if field.Uint() == 0 {
+			return true
+		}
+	case reflect.Float32, reflect.Float64:
+		if field.Float() == 0.0 {
+			return true
+		}
+		// case reflect.Bool:
+		// case reflect.Slice:
+	}
+
+	return false
+}
 func decoderFrom(field reflect.Value) Decoder {
 	if field.CanInterface() {
 		dec, ok := field.Interface().(Decoder)

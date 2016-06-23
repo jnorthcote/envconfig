@@ -32,6 +32,8 @@ type Specification struct {
 	NoPrefixDefault              string  `envconfig:"BROKER" default:"127.0.0.1"`
 	RequiredDefault              string  `required:"true" default:"foo2bar"`
 	Ignored                      string  `ignored:"true"`
+	LocatedVar                   string  `locate:"located_var"`
+	LocatedDefaultVar            string  `locate:"located_default_var" default:"barbaz"`
 }
 
 type Embedded struct {
@@ -241,6 +243,28 @@ func TestRequiredVar(t *testing.T) {
 
 	if s.RequiredVar != "foobar" {
 		t.Errorf("expected %s, got %s", "foobar", s.RequiredVar)
+	}
+}
+
+func TestRequiredVarSetInStruct(t *testing.T) {
+	s := Specification{
+		RequiredVar: "foobar",
+	}
+	os.Clearenv()
+	if err := Process("env_config", &s); err != nil {
+		t.Error(err.Error())
+	}
+
+	if s.RequiredVar != "foobar" {
+		t.Errorf("expected %s, got %s", "foobar", s.RequiredVar)
+	}
+}
+
+func TestRequiredVarNotSetInStruct(t *testing.T) {
+	var s Specification
+	os.Clearenv()
+	if err := Process("env_config", &s); err == nil {
+		t.Error("expected error for unset RequiredVar")
 	}
 }
 
@@ -485,9 +509,51 @@ func TestCustomDecoderWithPointer(t *testing.T) {
 	}
 }
 
+func TestLocatedVar(t *testing.T) {
+	var s Specification
+	var l locator
+	os.Clearenv()
+	os.Setenv("ENV_CONFIG_REQUIREDVAR", "foo")
+
+	if err := ProcessWithLocator("env_config", &s, l); err != nil {
+		t.Error(err.Error())
+	}
+
+	if s.LocatedVar != "foobar" {
+		t.Errorf("expected %s, got %s", "foobar", s.LocatedVar)
+	}
+}
+
+func TestLocatedDefaultVar(t *testing.T) {
+	var s Specification
+	var l locator
+	os.Clearenv()
+	os.Setenv("ENV_CONFIG_REQUIREDVAR", "foo")
+
+	if err := ProcessWithLocator("env_config", &s, l); err != nil {
+		t.Error(err.Error())
+	}
+
+	if s.LocatedDefaultVar != "barbaz" {
+		t.Errorf("expected %s, got %s", "foobar", s.LocatedDefaultVar)
+	}
+}
+
 type bracketed string
 
 func (b *bracketed) Decode(value string) error {
 	*b = bracketed("[" + value + "]")
 	return nil
+}
+
+type locator struct{}
+
+func (l locator) Locate(key string, def string) string {
+	if key == "located_var" {
+		return "foobar"
+	}
+	if def != "" {
+		return def
+	}
+	return key
 }
